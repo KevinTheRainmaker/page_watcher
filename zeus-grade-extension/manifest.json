@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "ZEUS Grade Watcher",
+  "version": "0.1.0",
+  "description": "Watch GIST ZEUS grade data through the grade lookup endpoint.",
+  "permissions": ["storage", "alarms", "notifications", "tabs", "scripting"],
+  "host_permissions": ["https://zeus.gist.ac.kr/*", "https://watcher.kangbeen.my/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://zeus.gist.ac.kr/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}
