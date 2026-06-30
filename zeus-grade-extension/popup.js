@@ -15,6 +15,9 @@ document.addEventListener("click", async (event) => {
   if (action === "register") {
     await runAction("등록 중", () => sendMessage({ type: "REGISTER_ACTIVE_ZEUS_TAB" }));
   }
+  if (action === "record-refresh-action") {
+    await runAction("선택 대기", () => sendMessage({ type: "START_REFRESH_ACTION_RECORDING" }));
+  }
   if (action === "check") {
     await runAction("확인 중", () => sendMessage({ type: "RUN_CHECK" }));
   }
@@ -48,6 +51,7 @@ async function refreshState() {
   summary.textContent = [
     state.studtNo ? `학번: ${state.studtNo}` : "개인성적조회 표가 보이는 화면에서 등록하세요.",
     state.pushChannel ? "모바일 알림 채널 준비됨" : "",
+    state.refreshActionSelector ? "새로고침 액션 등록됨" : "",
     state.lastSummary || "",
     state.lastResult ? `최근 결과: ${state.lastResult}` : "",
     state.lastCheckedAt ? `마지막 확인: ${formatTime(state.lastCheckedAt)}` : ""
@@ -72,6 +76,9 @@ async function runAction(status, runner) {
   }
   if (response.sent !== undefined || response.failed !== undefined) {
     summary.textContent = `푸시 테스트 결과: 성공 ${response.sent || 0}개, 실패 ${response.failed || 0}개`;
+  }
+  if (response.recordingStarted) {
+    summary.textContent = "ZEUS 페이지에서 실행할 액션을 클릭하세요.";
   }
 }
 
@@ -122,7 +129,8 @@ function reasonToMessage(reason) {
     "zeus-tab-not-open": "등록된 ZEUS 탭이 열려 있지 않습니다.",
     "empty-grade-dataset": "성적 데이터를 읽지 못했습니다. 로그인 상태를 확인해주세요.",
     "missing-push-config": "먼저 개인성적조회 화면을 등록하고 QR을 표시해주세요.",
-    "network-error": "푸시 서버에 연결하지 못했습니다."
+    "network-error": "푸시 서버에 연결하지 못했습니다.",
+    "content-api-not-ready": "ZEUS 탭을 새로고침한 뒤 다시 시도해주세요."
   };
   return messages[reason] || "작업에 실패했습니다.";
 }

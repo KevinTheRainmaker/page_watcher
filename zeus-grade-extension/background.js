@@ -10,7 +10,9 @@ const STORAGE_KEYS = [
   "lastResult",
   "intervalMinutes",
   "watchEnabled",
-  "pushChannel"
+  "pushChannel",
+  "refreshActionSelector",
+  "refreshActionFrameUrl"
 ];
 
 chrome.runtime.onInstalled.addListener(async () => {
@@ -44,6 +46,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "RUN_CHECK") {
     respondAsync(sendResponse, runCheck(true));
+    return true;
+  }
+
+  if (message?.type === "START_REFRESH_ACTION_RECORDING") {
+    respondAsync(sendResponse, startRefreshActionRecording());
     return true;
   }
 
@@ -126,6 +133,10 @@ async function runCheck(manual) {
   }
 
   await ensureContentScript(tab.id);
+  const refreshResults = await executeContentCommands(tab.id, { type: "RUN_REFRESH_ACTION" });
+  if (refreshResults.some((result) => result?.actionClicked)) {
+    await delay(3000);
+  }
   const result = await executeContentCommand(tab.id, {
     type: "FETCH_ZEUS_GRADES",
     studtNo: config.studtNo
@@ -186,6 +197,17 @@ async function markCheckFailure(reason, manual, extra = {}) {
   return { ok: false, reason, ...extra };
 }
 
+async function startRefreshActionRecording() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!isZeusTab(tab)) {
+    return { ok: false, reason: "not-zeus-tab" };
+  }
+  await ensureContentScript(tab.id);
+  const results = await executeContentCommands(tab.id, { type: "START_ACTION_RECORDING" });
+  const handled = results.some((result) => result?.ok || result?.handled);
+  return { ok: handled, recordingStarted: handled, reason: handled ? undefined : "content-api-not-ready" };
+}
+
 async function setIntervalMinutes(minutes) {
   const value = Number(minutes);
   if (!Number.isFinite(value) || value < 1) {
@@ -239,6 +261,11 @@ async function ensureContentScript(tabId) {
 }
 
 async function executeContentCommand(tabId, message) {
+  const results = await executeContentCommands(tabId, message);
+  return pickBestFrameResult(results);
+}
+
+async function executeContentCommands(tabId, message) {
   const injectionResults = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: async (command) => {
@@ -248,7 +275,7 @@ async function executeContentCommand(tabId, message) {
     },
     args: [message]
   });
-  return pickBestFrameResult(injectionResults.map((item) => item.result).filter(Boolean));
+  return injectionResults.map((item) => item.result).filter(Boolean);
 }
 
 function pickBestFrameResult(results) {
@@ -337,6 +364,12 @@ function generateChannel() {
 
 function isValidChannel(channel) {
   return typeof channel === "string" && /^[-_A-Za-z0-9]{8,80}$/.test(channel);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function updateBadgeFromState() {
