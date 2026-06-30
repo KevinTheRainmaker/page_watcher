@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Page Watcher",
+  "version": "0.1.0",
+  "description": "Monitor a selected area on a web page and notify when it changes.",
+  "permissions": ["storage", "notifications", "alarms", "tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {},
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}
