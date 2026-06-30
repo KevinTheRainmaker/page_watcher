@@ -1,9 +1,16 @@
 (() => {
-  const SCRIPT_VERSION = 2;
+  const SCRIPT_VERSION = 3;
   if (window.ZeusGradeWatcher?.version >= SCRIPT_VERSION) {
     return;
   }
 
+  const PUSH_SERVER_URL = "https://watcher.kangbeen.my";
+  const PANEL_ID = "zeus-grade-watcher-panel";
+  const PANEL_STATUS_ID = "zeus-grade-watcher-status";
+  const DIC_540 = "#9C9798";
+  const ACCENT_COLOR = "#F06050";
+  const GIST_LOGO_URL = chrome.runtime.getURL("gist-logo.png");
+  const A_PLUS_URL = chrome.runtime.getURL("a-plus.png");
   const SESSION_REFRESH_ENDPOINT = "/sys/main/refreshSessionTime.do";
   const GRADE_ENDPOINT = "/ugd/ugdCptnMrksQ/select.do";
   const PG_KEY = "PERS01^PERS01_03^002^UgdShtmMrksQ";
@@ -29,6 +36,14 @@
   });
 
   async function handleCommand(message) {
+    if (message?.type === "TOGGLE_PANEL") {
+      if (window.top !== window) {
+        return { ok: false, handled: false, reason: "not-top-frame", url: location.href };
+      }
+      await toggleFloatingPanel();
+      return { ok: true, handled: true, url: location.href };
+    }
+
     if (message?.type === "EXTRACT_ZEUS_CONTEXT") {
       return {
         ok: true,
@@ -54,10 +69,247 @@
     return { ok: false, reason: "unknown-command", url: location.href };
   }
 
+  async function toggleFloatingPanel() {
+    const existing = document.getElementById(PANEL_ID);
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    ensurePanelStyles();
+    const panel = document.createElement("section");
+    panel.id = PANEL_ID;
+    panel.innerHTML = `
+      <header>
+        <div class="zeus-grade-brand">
+          <span class="zeus-grade-gist-wrap">
+            <img class="zeus-grade-gist-logo" src="${GIST_LOGO_URL}" alt="GIST">
+            <span class="zeus-grade-gist-fallback" hidden>GIST</span>
+          </span>
+          <strong>ZEUS Grade Watcher</strong>
+          <img class="zeus-grade-aplus" src="${A_PLUS_URL}" alt="">
+        </div>
+        <button type="button" data-action="close" aria-label="닫기">x</button>
+      </header>
+      <div class="zeus-grade-body">
+        <button type="button" data-action="register">개인성적조회 화면 등록</button>
+        <button type="button" data-action="record-refresh-action" class="secondary">새로고침 액션 등록</button>
+        <button type="button" data-action="check">지금 확인</button>
+        <button type="button" data-action="show-qr" class="secondary">핸드폰 등록 QR 표시</button>
+        <button type="button" data-action="test-push" class="secondary">푸시 테스트</button>
+        <div class="zeus-grade-qr" data-role="qr" hidden></div>
+        <label>
+          검사 주기
+          <select data-field="interval">
+            <option value="5">5분</option>
+            <option value="10">10분</option>
+            <option value="30">30분</option>
+            <option value="60">1시간</option>
+          </select>
+        </label>
+        <button type="button" data-action="save-interval">자동 감시 시작</button>
+        <button type="button" data-action="clear" class="secondary">설정 삭제</button>
+        <div id="${PANEL_STATUS_ID}" role="status" aria-live="polite"></div>
+      </div>
+    `;
+    document.documentElement.appendChild(panel);
+    attachLogoFallback(panel);
+    panel.addEventListener("click", handlePanelClick);
+    await refreshPanelState();
+  }
+
+  async function handlePanelClick(event) {
+    const button = event.target.closest("button[data-action]");
+    if (!button) {
+      return;
+    }
+    const action = button.dataset.action;
+    if (action === "close") {
+      document.getElementById(PANEL_ID)?.remove();
+      return;
+    }
+    if (action === "register") {
+      await runPanelAction("등록 중", () => sendRuntimeMessage({ type: "REGISTER_ACTIVE_ZEUS_TAB" }));
+    }
+    if (action === "record-refresh-action") {
+      await runPanelAction("ZEUS 페이지에서 실행할 액션을 클릭하세요.", () => sendRuntimeMessage({ type: "START_REFRESH_ACTION_RECORDING" }));
+    }
+    if (action === "check") {
+      await runPanelAction("확인 중", () => sendRuntimeMessage({ type: "RUN_CHECK" }));
+    }
+    if (action === "show-qr") {
+      await showQrInPanel();
+    }
+    if (action === "test-push") {
+      await runPanelAction("전송 중", () => sendRuntimeMessage({ type: "SEND_TEST_PUSH" }));
+    }
+    if (action === "save-interval") {
+      const panel = document.getElementById(PANEL_ID);
+      const minutes = Number(panel?.querySelector('[data-field="interval"]')?.value || 30);
+      await runPanelAction("저장 중", () => sendRuntimeMessage({ type: "SET_INTERVAL", minutes }));
+    }
+    if (action === "clear") {
+      await runPanelAction("삭제 중", () => sendRuntimeMessage({ type: "CLEAR_CONFIG" }));
+      hidePanelQr();
+    }
+    await refreshPanelState();
+  }
+
+  async function runPanelAction(status, runner) {
+    setPanelStatus(status);
+    const response = await runner();
+    if (!response?.ok) {
+      setPanelStatus(reasonToMessage(response?.reason));
+      return response;
+    }
+    if (response.initialized) {
+      setPanelStatus("초기 성적 스냅샷을 저장했습니다.");
+      return response;
+    }
+    if (Array.isArray(response.changes)) {
+      setPanelStatus(response.changes.length > 0
+        ? [`변경 ${response.changes.length}개 감지`, response.changeSummary].filter(Boolean).join("\n")
+        : "변경된 성적이 없습니다.");
+      return response;
+    }
+    if (response.sent !== undefined || response.failed !== undefined) {
+      setPanelStatus(`푸시 테스트 결과: 성공 ${response.sent || 0}개, 실패 ${response.failed || 0}개`);
+      return response;
+    }
+    if (response.recordingStarted) {
+      setPanelStatus("ZEUS 페이지에서 실행할 액션을 클릭하세요.");
+      return response;
+    }
+    setPanelStatus("완료되었습니다.");
+    return response;
+  }
+
+  async function refreshPanelState() {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) {
+      return;
+    }
+    const response = await sendRuntimeMessage({ type: "GET_STATE" });
+    const state = response.state || {};
+    const interval = panel.querySelector('[data-field="interval"]');
+    if (interval && state.intervalMinutes) {
+      interval.value = String(state.intervalMinutes);
+    }
+    const lines = [
+      state.studtNo ? `학번: ${state.studtNo}` : "개인성적조회 표가 보이는 화면에서 등록하세요.",
+      state.watchEnabled ? "상태: 감시 중" : "상태: 대기",
+      state.pushChannel ? "모바일 알림 채널 준비됨" : "",
+      state.refreshActionSelector ? "새로고침 액션 등록됨" : "",
+      state.lastSummary || "",
+      state.lastResult ? `최근 결과: ${state.lastResult}` : "",
+      state.lastCheckedAt ? `마지막 확인: ${formatTime(state.lastCheckedAt)}` : ""
+    ].filter(Boolean);
+    setPanelStatus(lines.join("\n"));
+  }
+
+  async function showQrInPanel() {
+    const response = await sendRuntimeMessage({ type: "GET_STATE" });
+    let channel = response.state?.pushChannel;
+    if (!isValidChannel(channel) && response.state?.studtNo) {
+      const channelResponse = await sendRuntimeMessage({ type: "ENSURE_PUSH_CHANNEL" });
+      channel = channelResponse.pushChannel;
+    }
+    if (!isValidChannel(channel)) {
+      hidePanelQr();
+      setPanelStatus("먼저 개인성적조회 화면을 등록하면 QR이 생성됩니다.");
+      return;
+    }
+    const panel = document.getElementById(PANEL_ID);
+    const qr = panel?.querySelector('[data-role="qr"]');
+    if (!qr) {
+      return;
+    }
+    const registerUrl = `${PUSH_SERVER_URL}/register.html?channel=${encodeURIComponent(channel)}`;
+    const qrUrl = `${PUSH_SERVER_URL}/qr?text=${encodeURIComponent(registerUrl)}`;
+    qr.hidden = false;
+    qr.innerHTML = `
+      <img src="${qrUrl}" alt="모바일 등록 QR">
+    `;
+    setPanelStatus("핸드폰 Chrome으로 QR을 열고 알림을 허용하세요.");
+  }
+
+  function hidePanelQr() {
+    const qr = document.getElementById(PANEL_ID)?.querySelector('[data-role="qr"]');
+    if (!qr) {
+      return;
+    }
+    qr.hidden = true;
+    qr.textContent = "";
+  }
+
+  function attachLogoFallback(root) {
+    const logo = root.querySelector(".zeus-grade-gist-logo");
+    const fallback = root.querySelector(".zeus-grade-gist-fallback");
+    if (!logo || !fallback) {
+      return;
+    }
+    const showFallback = () => {
+      logo.hidden = true;
+      fallback.hidden = false;
+    };
+    logo.addEventListener("error", showFallback);
+    logo.addEventListener("load", () => {
+      fallback.hidden = true;
+    });
+    queueMicrotask(() => {
+      if (logo.complete && logo.naturalWidth === 0) {
+        showFallback();
+      }
+    });
+  }
+
+  function sendRuntimeMessage(message) {
+    return chrome.runtime.sendMessage(message);
+  }
+
+  function setPanelStatus(message) {
+    const status = document.getElementById(PANEL_STATUS_ID);
+    if (status) {
+      status.textContent = message;
+    }
+  }
+
+  function formatTime(timestamp) {
+    return new Intl.DateTimeFormat("ko-KR", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(new Date(timestamp));
+  }
+
+  function reasonToMessage(reason) {
+    const messages = {
+      "not-zeus-tab": "현재 탭이 ZEUS가 아닙니다.",
+      "student-number-not-found": "학번을 찾지 못했습니다. 개인성적조회 표가 보이는 화면에서 등록해주세요.",
+      "missing-config": "먼저 개인성적조회 화면을 등록해주세요.",
+      "zeus-tab-not-open": "등록된 ZEUS 탭이 열려 있지 않습니다.",
+      "empty-grade-dataset": "성적 데이터를 읽지 못했습니다. 로그인 상태를 확인해주세요.",
+      "student-number-mismatch": "현재 ZEUS 화면의 학번과 저장된 학번이 달라 조회를 중단했습니다.",
+      "missing-push-config": "먼저 개인성적조회 화면을 등록하고 QR을 표시해주세요.",
+      "network-error": "푸시 서버에 연결하지 못했습니다.",
+      "content-api-not-ready": "ZEUS 탭을 새로고침한 뒤 다시 시도해주세요."
+    };
+    return messages[reason] || "작업에 실패했습니다.";
+  }
+
+  function isValidChannel(channel) {
+    return typeof channel === "string" && /^[-_A-Za-z0-9]{8,80}$/.test(channel);
+  }
+
   async function fetchGrades(studtNo) {
-    const studentNumber = studtNo || findStudentNumber();
+    const visibleStudentNumber = findStudentNumber();
+    const requestedStudentNumber = String(studtNo || "").trim();
+    const studentNumber = requestedStudentNumber || visibleStudentNumber;
     if (!studentNumber) {
       return { ok: false, reason: "missing-student-number" };
+    }
+    if (requestedStudentNumber && visibleStudentNumber && requestedStudentNumber !== visibleStudentNumber) {
+      return { ok: false, reason: "student-number-mismatch" };
     }
 
     const sessionRefresh = await refreshSessionTime();
@@ -255,6 +507,10 @@
     document.documentElement.classList.add("zeus-grade-action-cursor");
 
     const onMouseMove = (event) => {
+      if (isInsidePanel(event.target)) {
+        removeActionOverlay();
+        return;
+      }
       const element = getActionElement(event.target);
       if (element) {
         showActionOverlay(element);
@@ -264,6 +520,9 @@
     };
 
     const onClick = async (event) => {
+      if (isInsidePanel(event.target)) {
+        return;
+      }
       const element = getActionElement(event.target);
       if (!element) {
         return;
@@ -292,6 +551,10 @@
 
   function stopActionRecordingMode() {
     window.ZeusGradeWatcherActionCleanup?.();
+  }
+
+  function isInsidePanel(target) {
+    return target instanceof Element && Boolean(target.closest(`#${PANEL_ID}`));
   }
 
   async function clickRefreshAction() {
@@ -378,6 +641,7 @@
       return null;
     }
     if (
+      target.closest(`#${PANEL_ID}`) ||
       target.closest(".zeus-grade-action-overlay") ||
       target.closest(".zeus-grade-toast")
     ) {
@@ -498,8 +762,8 @@
         position: "fixed",
         zIndex: "2147483647",
         pointerEvents: "none",
-        border: "3px solid #f97316",
-        background: "rgba(249, 115, 22, 0.16)",
+        border: `3px solid ${ACCENT_COLOR}`,
+        background: "rgba(240, 96, 80, 0.16)",
         boxSizing: "border-box"
       });
       document.documentElement.appendChild(overlay);
@@ -527,7 +791,7 @@
       zIndex: "2147483647",
       padding: "10px 12px",
       color: "#ffffff",
-      background: "#2457c5",
+      background: ACCENT_COLOR,
       borderRadius: "6px",
       font: "13px/1.4 system-ui, sans-serif",
       boxShadow: "0 12px 36px rgba(15, 23, 42, 0.24)"
@@ -547,6 +811,171 @@
 
   function isSameFrame(frameUrl) {
     return !frameUrl || frameUrl === location.href;
+  }
+
+  function ensurePanelStyles() {
+    if (document.getElementById("zeus-grade-watcher-styles")) {
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "zeus-grade-watcher-styles";
+    style.textContent = `
+      #${PANEL_ID} {
+        --dic-540: ${DIC_540};
+        --accent-color: ${ACCENT_COLOR};
+        position: fixed;
+        top: 18px;
+        right: 18px;
+        z-index: 2147483647;
+        width: 310px;
+        color: #172033;
+        background: #f7f8fb;
+        border: 1px solid #d7dce7;
+        border-radius: 8px;
+        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+        font: 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        overflow: hidden;
+      }
+      #${PANEL_ID}, #${PANEL_ID} * {
+        box-sizing: border-box;
+      }
+      #${PANEL_ID} header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 26px;
+        align-items: center;
+        gap: 8px;
+        min-height: 40px;
+        padding: 8px 10px 8px 12px;
+        color: #ffffff;
+        background: var(--dic-540);
+      }
+      #${PANEL_ID} .zeus-grade-brand {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 8px;
+      }
+      #${PANEL_ID} header strong {
+        font-size: 14px;
+        font-weight: 750;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #${PANEL_ID} .zeus-grade-aplus {
+        width: 28px;
+        height: 28px;
+        flex: 0 0 auto;
+        object-fit: contain;
+      }
+      #${PANEL_ID} .zeus-grade-gist-wrap {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 54px;
+        height: 18px;
+        flex: 0 0 auto;
+      }
+      #${PANEL_ID} .zeus-grade-gist-logo {
+        width: 54px;
+        height: 18px;
+        object-fit: contain;
+      }
+      #${PANEL_ID} .zeus-grade-gist-logo[hidden] {
+        display: none;
+      }
+      #${PANEL_ID} .zeus-grade-gist-fallback {
+        color: #ffffff;
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: 0;
+      }
+      #${PANEL_ID} .zeus-grade-gist-fallback[hidden] {
+        display: none;
+      }
+      #${PANEL_ID} header button {
+        width: 26px;
+        min-height: 26px;
+        padding: 0;
+        color: #ffffff;
+        background: transparent;
+        border: 1px solid rgba(255, 255, 255, 0.46);
+        border-radius: 6px;
+      }
+      #${PANEL_ID} .zeus-grade-body {
+        display: grid;
+        gap: 9px;
+        padding: 12px;
+      }
+      #${PANEL_ID} button,
+      #${PANEL_ID} select {
+        width: 100%;
+        min-height: 34px;
+        border: 1px solid #cbd2df;
+        border-radius: 6px;
+        font: inherit;
+      }
+      #${PANEL_ID} button {
+        cursor: pointer;
+        color: #ffffff;
+        background: var(--accent-color);
+        border-color: var(--accent-color);
+        font-weight: 700;
+      }
+      #${PANEL_ID} button.secondary {
+        color: #293246;
+        background: #ffffff;
+        border-color: #cbd2df;
+      }
+      #${PANEL_ID} label {
+        display: grid;
+        gap: 5px;
+        color: #475569;
+      }
+      #${PANEL_ID} select {
+        padding: 0 9px;
+        color: #172033;
+        background: #ffffff;
+      }
+      #${PANEL_ID} #${PANEL_STATUS_ID} {
+        min-height: 38px;
+        padding: 9px;
+        color: #475569;
+        background: #ffffff;
+        border: 1px solid #d9deea;
+        border-radius: 6px;
+        white-space: pre-line;
+      }
+      #${PANEL_ID} .zeus-grade-qr {
+        display: grid;
+        gap: 6px;
+        justify-items: center;
+        padding: 8px;
+        background: #ffffff;
+        border: 1px solid #d9deea;
+        border-radius: 6px;
+      }
+      #${PANEL_ID} .zeus-grade-qr[hidden] {
+        display: none;
+      }
+      #${PANEL_ID} .zeus-grade-qr img {
+        width: 180px;
+        height: 180px;
+      }
+      .zeus-grade-action-cursor,
+      .zeus-grade-action-cursor * {
+        cursor: crosshair !important;
+      }
+      .zeus-grade-action-cursor #${PANEL_ID},
+      .zeus-grade-action-cursor #${PANEL_ID} * {
+        cursor: auto !important;
+      }
+      .zeus-grade-action-cursor #${PANEL_ID} button,
+      .zeus-grade-action-cursor #${PANEL_ID} select {
+        cursor: pointer !important;
+      }
+    `;
+    document.documentElement.appendChild(style);
   }
 
   function pad(value) {

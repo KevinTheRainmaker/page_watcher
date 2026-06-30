@@ -16,9 +16,13 @@
       "all_frames": true
     }
   ],
-  "action": {
-    "default_popup": "popup.html"
-  },
+  "web_accessible_resources": [
+    {
+      "resources": ["gist-logo.png", "a-plus.png"],
+      "matches": ["https://zeus.gist.ac.kr/*"]
+    }
+  ],
+  "action": {},
   "icons": {
     "16": "icon.png",
     "48": "icon.png",

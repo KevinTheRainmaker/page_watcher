@@ -99,7 +99,6 @@ async function showQr() {
   qr.hidden = false;
   qr.innerHTML = `
     <img src="${qrUrl}" alt="모바일 등록 QR">
-    <a href="${registerUrl}" target="_blank" rel="noopener noreferrer">${registerUrl}</a>
   `;
 }
 

@@ -33,6 +33,19 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   runCheck(false);
 });
 
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!isZeusTab(tab)) {
+    showNotification("ZEUS Grade Watcher", "ZEUS 페이지에서만 패널을 열 수 있습니다.");
+    return;
+  }
+  try {
+    await ensureContentScript(tab.id);
+    await executeContentCommand(tab.id, { type: "TOGGLE_PANEL" });
+  } catch (error) {
+    showNotification("ZEUS Grade Watcher", "ZEUS 페이지에 패널을 열 수 없습니다.");
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "GET_STATE") {
     respondAsync(sendResponse, getState());
@@ -151,6 +164,7 @@ async function runCheck(manual) {
   const previous = Array.isArray(config.snapshot) ? config.snapshot : [];
   const changes = diffSnapshots(previous, result.snapshot);
   const summary = summarizeSnapshot(result.snapshot);
+  const changeSummary = changes.length > 0 ? formatChanges(changes) : "";
 
   await chrome.storage.local.set({
     zeusTabId: tab.id,
@@ -171,8 +185,9 @@ async function runCheck(manual) {
 
   if (changes.length > 0) {
     await setBadge("NEW", "#dc2626");
-    await chrome.storage.local.set({ lastResult: `변경 ${changes.length}개 감지` });
-    showNotification("ZEUS 성적 변경 감지", formatChanges(changes));
+    const changeTitle = formatChangeTitle(changes);
+    await chrome.storage.local.set({ lastResult: `${changeTitle}\n${changeSummary}` });
+    showNotification(changeTitle, changeSummary);
     await sendZeusPushNotification(changes, false);
   } else if (manual) {
     await setBadge("OK", "#16a34a");
@@ -181,7 +196,7 @@ async function runCheck(manual) {
     await setBadge("OK", "#16a34a");
   }
 
-  return { ok: true, summary, changes };
+  return { ok: true, summary, changes, changeSummary };
 }
 
 async function markCheckFailure(reason, manual, extra = {}) {
@@ -307,6 +322,7 @@ async function sendZeusPushNotification(changes, isTest) {
   const message = isTest
     ? "ZEUS Grade Watcher 테스트 알림입니다."
     : formatChanges(changes);
+  const title = isTest ? "ZEUS Grade Watcher 테스트" : formatChangeTitle(changes);
 
   try {
     const response = await fetch(`${PUSH_SERVER_URL}/notify`, {
@@ -316,7 +332,7 @@ async function sendZeusPushNotification(changes, isTest) {
       },
       body: JSON.stringify({
         channel: pushChannel,
-        title: isTest ? "ZEUS Grade Watcher 테스트" : "ZEUS 성적 변경 감지",
+        title,
         message,
         labels,
         pageUrl: "https://zeus.gist.ac.kr/"
@@ -422,11 +438,16 @@ function summarizeSnapshot(snapshot) {
 function formatChanges(changes) {
   const lines = changes.slice(0, 4).map((change) => {
     const row = change.row;
-    if (change.type === "added") {
-      return `${row.courseName}: 새 항목`;
+    if (isGradeRegistration(change)) {
+      return `"${row.courseName}"의 성적이 등록되었습니다.`;
     }
-    const gradeText = `${change.old.grade || "빈값"} -> ${row.grade || "빈값"}`;
-    return `${row.courseName}: ${gradeText}`;
+    if (isGradeChange(change)) {
+      return `"${row.courseName}"의 성적이 변경되었습니다.`;
+    }
+    if (change.type === "added") {
+      return `"${row.courseName}" 항목이 추가되었습니다.`;
+    }
+    return `"${row.courseName}"의 ${formatChangedFields(change.fields)} 항목이 변경되었습니다.`;
   });
   if (changes.length > 4) {
     lines.push(`외 ${changes.length - 4}개`);
@@ -434,10 +455,46 @@ function formatChanges(changes) {
   return lines.join("\n");
 }
 
+function formatChangeTitle(changes) {
+  const hasRegistration = changes.some(isGradeRegistration);
+  const hasChange = changes.some((change) => !isGradeRegistration(change));
+  if (hasRegistration && !hasChange) {
+    return "ZEUS 성적 등록 감지";
+  }
+  if (!hasRegistration && hasChange) {
+    return "ZEUS 성적 변경 감지";
+  }
+  return "ZEUS 성적 등록/변경 감지";
+}
+
+function isGradeRegistration(change) {
+  if (change.type === "added") {
+    return Boolean(change.row?.grade);
+  }
+  return change.fields?.includes("grade") && !change.old?.grade && Boolean(change.row?.grade);
+}
+
+function isGradeChange(change) {
+  if (!change.fields?.includes("grade")) {
+    return false;
+  }
+  return Boolean(change.old?.grade) || !change.row?.grade;
+}
+
+function formatChangedFields(fields = []) {
+  const labels = {
+    credit: "학점",
+    grade: "등급",
+    gpa: "평점"
+  };
+  return fields.map((field) => labels[field] || field).join(", ") || "항목 변경";
+}
+
 function reasonToMessage(reason) {
   const messages = {
     "missing-student-number": "ZEUS 화면에서 학번을 찾지 못했습니다.",
     "empty-grade-dataset": "성적 데이터를 읽지 못했습니다. 로그인 상태를 확인해주세요.",
+    "student-number-mismatch": "현재 ZEUS 화면의 학번과 저장된 학번이 달라 조회를 중단했습니다.",
     "zeus-tab-not-open": "ZEUS 탭이 열려 있지 않습니다.",
     "missing-config": "먼저 개인성적조회 화면을 등록해주세요."
   };

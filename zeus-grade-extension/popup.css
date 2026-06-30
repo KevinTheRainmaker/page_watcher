@@ -2,6 +2,11 @@
   box-sizing: border-box;
 }
 
+:root {
+  --dic-540: #9C9798;
+  --accent-color: #F06050;
+}
+
 body {
   width: 310px;
   margin: 0;
@@ -17,18 +22,57 @@ main {
 }
 
 header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+header .brand {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  min-width: 0;
+  gap: 8px;
 }
 
 header strong {
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aplus {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
+.gist-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.gist-logo {
+  width: 54px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.gist-fallback {
+  color: #ffffff;
   font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 header span {
-  color: #2457c5;
+  color: var(--accent-color);
   font-size: 12px;
   font-weight: 700;
 }
@@ -57,8 +101,8 @@ select {
 
 button {
   color: #ffffff;
-  background: #2457c5;
-  border-color: #2457c5;
+  background: var(--accent-color);
+  border-color: var(--accent-color);
   cursor: pointer;
   font-weight: 700;
 }
@@ -103,11 +147,4 @@ p {
 .qr img {
   width: 180px;
   height: 180px;
-}
-
-.qr a {
-  max-width: 100%;
-  color: #2457c5;
-  font-size: 11px;
-  overflow-wrap: anywhere;
 }
